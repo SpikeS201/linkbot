@@ -1,8 +1,9 @@
 from urllib.parse import urlsplit, urljoin
 from bs4 import BeautifulSoup, Tag
 from typing import TypedDict
-import requests
-
+import aiohttp
+import asyncio
+import sys
 
 class PageData(TypedDict):
     url: str
@@ -10,6 +11,101 @@ class PageData(TypedDict):
     first_paragraph: str
     outgoing_links: list[str]
     image_urls: list[str]
+
+class AsyncCrawler:
+    def __init__(self, base_url: str):
+        self.base_url: str = base_url
+        self.base_domain: str = urlsplit(base_url).netloc
+        self.page_data: dict = {}
+        self.visited = set()
+        self.lock =  asyncio.Lock()
+        self.max_concurrency: int = int(sys.argv[2])
+        self.semaphore = asyncio.Semaphore(self.max_concurrency)
+        self.session = None
+        self.max_pages: int = int(sys.argv[3])
+        self.should_stop: bool = False
+        self.all_tasks = set()
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.session.close()
+    
+    async def add_page_visit(self, normalized_url):
+        async with self.lock:
+            if self.should_stop is True or normalized_url in self.visited:
+                return False
+            elif len(self.visited) >= self.max_pages:
+                self.should_stop = True
+                print("Reached maximum number of pages to crawl.")
+                return False
+            else:
+                self.visited.add(normalized_url)
+                return True
+    
+    async def get_html(self, url):
+        try:
+            async with self.session.get(url, headers={"User-Agent": "BootCrawler/1.0"}) as resp:
+                resp.raise_for_status()
+                if not resp.headers['Content-Type'].startswith('text/html'):
+                    raise Exception(f"got non-HTML response: {resp.headers['Content-Type']}")
+                return await resp.text()
+        except Exception as e:
+            raise Exception(f"network error while fetching {url}: {e}")
+    
+        
+    async def crawl_page(self,
+        current_url: str | None = None,
+        )-> dict[str, PageData]:
+        
+        if self.should_stop is True:
+            return self.page_data
+        if current_url is None:
+            current_url = self.base_url
+        if self.page_data is None:
+            self.page_data = {}
+            
+        if self.base_domain != urlsplit(current_url).netloc:
+            return self.page_data
+        
+        url = normalize_url(current_url)
+        
+        if not await self.add_page_visit(url):
+            return self.page_data
+        
+        print(f"crawling {url}")
+        async with self.semaphore:
+            
+            html = await self.get_html(current_url)
+        
+            async with self.lock:
+                data = extract_page_data(html, current_url)
+                self.page_data[url] = data
+                
+                tasks = set()
+                for link in data["outgoing_links"]:
+                    task = asyncio.create_task(self.crawl_page(link))
+                    tasks.add(task)
+                    self.all_tasks.add(task)
+                    print(f"crawling {link}")
+                    task.add_done_callback(self.all_tasks.discard)
+        
+        await asyncio.gather(*tasks)
+        
+        
+        
+        return self.page_data
+
+    async def crawl(self):
+        await self.crawl_page(self.base_url)
+        return self.page_data
+    
+async def crawl_site_async(base_url):
+    async with AsyncCrawler(base_url) as crawler:
+        return await crawler.crawl()
+            
 
 def normalize_url(input_url: str) -> str:
     split = urlsplit(input_url)
@@ -67,48 +163,7 @@ def extract_page_data(html: str, page_url: str)-> PageData:
                     }
     return page_data
 
-def get_html(url):
-    try:
-        r = requests.get(url, headers={"User-Agent": "BootCrawler/1.0"})
-    except Exception as e:
-        raise Exception(f"network error while fetching {url}: {e}")
-    
-    r.raise_for_status()
-    
-    if not r.headers['Content-Type'].startswith('text/html'):
-        raise Exception(f"got non-HTML response: {r.headers['Content-Type']}")
-    
-    return r.text
 
-def crawl_page(
-    base_url: str,
-    current_url: str | None = None,
-    page_data: dict[str, PageData] | None = None
-    )-> dict[str, PageData]:
-    
-    if current_url is None:
-        current_url = base_url
-    if page_data is None:
-        page_data = {}
-        
-    if urlsplit(base_url).netloc != urlsplit(current_url).netloc:
-        return page_data
-    
-    url = normalize_url(current_url)
-    
-    if url in page_data:
-        return page_data
-    
-    print(f"crawling {url}")
-    html = get_html(current_url)
-    
-    data = extract_page_data(html, current_url)
-    page_data[url] = data
-    
-    for link in data["outgoing_links"]:
-        page_data = crawl_page(base_url, link, page_data)
-        print(f"crawling {link}")
-    
-    return page_data
-    
+
+
     
