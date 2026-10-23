@@ -1,5 +1,6 @@
 import sys
 from crawl import *
+from json_report import write_json_report
 
 async def main():
     print("Hello from linkbot!")
@@ -15,9 +16,8 @@ async def main():
     page_data = await crawl_site_async(sys.argv[1])
     
     print(f"crawling finished, crawled pages{len(page_data)}")
-    for page in page_data.values():
-        print(f"- {page['url']}: {len(page['outgoing_links'])} outgoing links")
     
+    write_json_report(page_data)
     
     sys.exit(0)
 

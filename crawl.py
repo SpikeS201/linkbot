@@ -94,8 +94,6 @@ class AsyncCrawler:
         
         await asyncio.gather(*tasks)
         
-        
-        
         return self.page_data
 
     async def crawl(self):
